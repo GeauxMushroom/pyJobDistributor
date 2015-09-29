@@ -1,30 +1,39 @@
 import subprocess
 import os
 from multiprocessing import Pool
-from numpy import vstack
+from numpy import vstack, hstack
 import time
-from random import randint
+from numpy.random import randint
 
 
-nCpuPerNode=1
-nMicPerNode=2
+nCpuPerNode=4
+nMicPerNode=0
 nProcPerCPU=20
 nProcPerMIC=240
 
 
 def getHostList():
-    hostfile = os.environ['PBS_NODEFILE']
-    nodeList = set(open(hostfile).readlines())
-    nodeList = map(lambda s: s.strip(), nodeList)
-    return nodeList
+    hostfile = os.environ.get('PBS_NODEFILE')
+    if hostfile == None:
+        return ["LOCAL"]
+    else:
+        nodeList = set(open(hostfile).readlines())
+        nodeList = map(lambda s: s.strip(), nodeList)
+        return nodeList
 
 
 def callFunc(parList):
-    nodeType,nodeName, micId, jobId = parList
+    [nodeName,procType, procId], jobId, jobPar = parList
     HOST = nodeName
+    print "Proc %d is going to work for %d seconds" %(int(procId), jobPar)
+    time.sleep(jobPar)
+    if HOST == "LOCAL":
+        result = subprocess.check_output("./printHost.cpu")
+        return result
+
     CPU_COMMAND = '~/pyJobDistributor/printHost.cpu'
     MIC_COMMAND = 'ssh mic%d ~/pyJobDistributor/printHost.mic' %int(micId)
-    if nodeType == 'cpu':
+    if procType == 'cpu':
         ssh = subprocess.Popen(["ssh", "%s" % HOST, CPU_COMMAND],
                        shell=False,
                        stdout=subprocess.PIPE,
@@ -36,7 +45,6 @@ def callFunc(parList):
                        stderr=subprocess.PIPE)
     result = ssh.stdout.readlines()
     error = ssh.stderr.readlines()
-    time.sleep(randint(0,10))
     return result, error
 
 def runJobSerial():
@@ -50,31 +58,63 @@ def runJobSerial():
     return
 
 
-def setupPar():
+def getProcList():
     nodeList = getHostList()
+    nNodes = len(nodeList)
     nProcPerNode = nCpuPerNode + nMicPerNode
-    procType = ['cpu'] * nCpuPerNode + ['mic'] * nMicPerNode
-    micId =  [0] * nCpuPerNode + range(nMicPerNode) 
-    jobId = range(nProcPerNode)
-    hostName = [nodeList[0]] * nProcPerNode
-    parList = vstack([procType, hostName, micId, jobId]).transpose()
-    return parList
+    procType = ['cpu'] * nCpuPerNode + ['mic'] * nMicPerNode 
+    procType = procType * nNodes
+    procId = range(nCpuPerNode) + range(nMicPerNode) 
+    procId = procId * nNodes
+    hostName = hstack(map(lambda s:[s] * nProcPerNode, nodeList))
+    procList = vstack([ hostName, procType, procId]).transpose()                    
+    return procList
+                     
 
 def runJobAsync():
-    nProcPerNode = nCpuPerNode + nMicPerNode
-    parList=setupPar()
-    pool = Pool(processes=nProcPerNode)
+
+    procList = getProcList()
+    nProc = len(procList)
+    pool = Pool(processes = nProc)
     result = []
-    for i in range(len(parList)):
-        result.append(pool.apply_async(callFunc,[parList[i]]))
+
+    nJobs = 10
+    jobPres = [ None ] * nJobs 
+    jobFinished = [False] * nJobs
+    jobTaken = [False] * nJobs
+    jobPar = randint(10, size= nJobs)+5
+
+    for i in range(nProc):
+        result.append(pool.apply_async(callFunc,[[procList[i],i,jobPar[i]]]))
+    currentJob = range(nProc)
+    jobTaken[:nProc] = [True] * nProc
+
     allFinished = False
     while(not allFinished):
-        allFinished = True
         time.sleep(1)
-        for i in range(len(parList)):
-            if result[i].ready()==False:
-                print "Job %d still running" %i
+        for i in range(nProc):
+            if currentJob[i] == -1:
+                # this process has retired
+                continue
+            if (result[currentJob[i]].ready()):
+                print "Proc %d finished with Job %d" %(i,currentJob[i])
+                print result[currentJob[i]].get()
+                jobFinished[currentJob[i]] = True
+                j = 0
+                while( j < nJobs and (jobFinished[j] or jobTaken[j])):
+                    j += 1
+                if j == nJobs:
+                    print "Proc %d has retired " %(i)
+                    currentJob[i] = -1
+                else:
+                    result.append(pool.apply_async(callFunc,[[procList[i],j,jobPar[j]]]))
+                    currentJob[i] = j
+                    jobTaken[j] = True
+                    print "Proc %d starts working on Job %d" %(i,j)
+
+        allFinished = True
+        for j in range(nJobs):
+            if(not jobFinished[j]):
                 allFinished = False
-            else:
-                print result[i].get()
+
     print "all jobs finished!"
