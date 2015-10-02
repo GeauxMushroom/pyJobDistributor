@@ -1,15 +1,54 @@
 import subprocess
 import os
 from multiprocessing import Pool
-from numpy import vstack, hstack
+import numpy as np
+from numpy import vstack, hstack, genfromtxt
+
 import time
 from numpy.random import randint
 
 
 nCpuPerNode=4
 nMicPerNode=0
-nProcPerCPU=20
-nProcPerMIC=240
+nThrdsPerCPU=20
+nThrdsPerMIC=240
+
+def genInput(procType,jobId):
+    #generate the input files for CTQMC solver
+    dirName='jobDir_%d' % jobId
+    os.mkdir(dirName)
+    par = np.genfromtxt('parameters.txt',skip_header=1)[jobId]
+    #par:
+    #beta e0 g w0 a U0 t**2 D iterPM iterPC iterTot iterWarm noThrds rngSeed
+
+    e0 = par[1]
+    g = par[2]
+    w0 = par[3]
+    a = par[4]
+    U0 = par[5]
+    ee= w0 * sqrt(1 + g * g)
+
+    hamiltonian = np.zeros([8,8]) 
+    hamiltonian[0][0] = ee;
+    hamiltonian[1][1] = ee + e0 + g * w0;
+    hamiltonian[2][2] = ee + e0 + g * w0;
+    hamiltonian[3][3] = ee + 2.0 * e0 + U0 - (a - 1.0) * g * w0;
+    hamiltonian[0][4] = w0;
+    hamiltonian[1][5] = w0;
+    hamiltonian[2][6] = w0;
+    hamiltonian[3][7] = w0;
+    hamiltonian[4][0] = w0;
+    hamiltonian[5][1] = w0;
+    hamiltonian[6][2] = w0;
+    hamiltonian[7][3] = w0;
+
+    hamiltonian[4][4] = ee;
+    hamiltonian[5][5] = ee + e0 - g * w0;
+    hamiltonian[6][6] = ee + e0 - g * w0;
+    hamiltonian[7][7] = ee + 2.0 * e0 + U0 + (a-1.0) * g * w0;
+    np.savetxt(dirName+'/hamiltonian.txt', hamiltonian)
+    np.savetxt(dirName+'/parameters.txt', par)
+    return
 
 
 def getHostList():
